@@ -237,9 +237,9 @@ def plot_metrics_for_each_method(df, methods):
         
         
         # 设置 x 轴为对数尺度并绘制各指标
-        sns.lineplot(data=method_df, x='n', y='MSE', label='MSE', marker='o', ax=axes[i])
-        sns.lineplot(data=method_df, x='n', y='Bias^2', label=r"Bias$^2$", marker='D', ax=axes[i])
-        sns.lineplot(data=method_df, x='n', y='Variance', label='Variance', marker='H', ax=axes[i])
+        sns.lineplot(data=method_df, x='n', y='MSE', label='MSE', marker='o',  markersize=10,ax=axes[i], linewidth=3)
+        sns.lineplot(data=method_df, x='n', y='Bias^2', label=r"Bias$^2$", marker='D', markersize=10, ax=axes[i], linewidth=3)
+        sns.lineplot(data=method_df, x='n', y='Variance', label='Variance', marker='H', markersize=10, ax=axes[i], linewidth=3)
         
         # 设置标题和轴标签
         axes[i].set_title(f"{method} Performance Metrics")
@@ -248,7 +248,7 @@ def plot_metrics_for_each_method(df, methods):
         axes[i].set_xscale('log', base=2)  # 设置 x 轴为 log_2 规模
         #axes[i].set_yscale('log', base=2)  # 设置 y 轴为对数尺度
         axes[i].tick_params(labelsize=20)
-        axes[i].legend(title='Metric', fontsize=10)
+        #axes[i].legend(title='Metric', fontsize=10)
         axes[i].grid(True)
     
     plt.tight_layout()  # 调整整体布局
@@ -436,7 +436,7 @@ if __name__ == '__main__':
 
     sns.set_theme()
     plt.figure(figsize=(10, 6))
-    sns.lineplot(data=df, x='n', y='MSE', hue='Method', marker='o')
+    sns.lineplot(data=df, x='n', y='MSE', hue='Method', style='Method',markers=['o', 's', 'D', '^'], dashes=False, markersize=10,linewidth=3,ci=None)
     plt.xscale('log', base=2)
     
     plt.xlabel('Number of covariate points (n)', fontsize=14)
