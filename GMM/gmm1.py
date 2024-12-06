@@ -330,10 +330,3 @@ if __name__ == '__main__':
     print(thetas_true.shape)
     thetas_true = thetas_true.reshape(-1,covariate_dim)
     plot_theta_distribution1(thetas_true,generated_theta)
-    # if covariate_dim == 2:
-    #     plt.figure(figsize=(8, 6))
-    #     sns.scatterplot(x=generated_theta[:, 0], y=generated_theta[:, 1], color='blue', s=100, alpha=0.7)
-    #     plt.title('Scatter plot of two dimensions')
-    #     plt.xlabel('Dimension 1')
-    #     plt.ylabel('Dimension 2')
-    #     plt.show()
