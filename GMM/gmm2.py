@@ -14,11 +14,11 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from scipy.signal import find_peaks
 from sklearn.metrics.pairwise import euclidean_distances
 import torch.nn.functional as F
-
-
+from sklearn.mixture import GaussianMixture
+from scipy.spatial.distance import cdist
 
 def objective_function(theta, x):
-    term1 = np.sum(np.sin(np.pi * theta) + 0.2 * (theta - x) ** 2)
+    term1 = np.sum(np.sin(np.pi * theta) + 0.1 * (theta - x) ** 2)
     return term1
 
 # Grid sampling function
@@ -48,7 +48,7 @@ def gradient(theta, x):
     x: d-dimensional vector (target values)
     """
     grad_term1 = np.pi * np.cos(np.pi * theta)  # Gradient of sin(pi*theta)
-    grad_term2 = 0.4 * (theta - x)  # Gradient of 0.2 * (theta - x)^2
+    grad_term2 = 0.2 * (theta - x)  # Gradient of 0.2 * (theta - x)^2
     noise = np.random.normal(0, noise_std, covariate_dim)
     return grad_term1 + grad_term2 + noise
 
@@ -134,9 +134,6 @@ def plot_theta_distribution(selected_theta):
         plt.ylabel('Dimension 2')
         plt.show()
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
 
 def plot_theta_distribution1(x, y):
     """ 参数：
@@ -178,7 +175,98 @@ def plot_theta_distribution1(x, y):
         plt.ylabel('Dimension 2')
         plt.legend()
         plt.show()
+
+
+class SurfaceModel(nn.Module):
+    def __init__(self, input_dim):
+        super(SurfaceModel, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)  # 输出单个目标值
+        )
     
+    def forward(self, x):
+        return self.net(x)
+
+def train_nn_surface_model(X, thetas, objective_values, x_dim, epochs=100, lr=1e-2, batch_size=32):
+    # 创建训练数据
+    n, K, theta_dim = thetas.shape
+    X_repeated = np.repeat(X, K, axis=0)  # 将 X 重复 K 次
+    thetas_flat = thetas.reshape(-1, theta_dim)  # 展平 thetas
+    inputs = np.hstack([thetas_flat, X_repeated])  # 拼接 theta 和 x
+    labels = objective_values.flatten()
+
+
+   
+    # 转换为 PyTorch 张量
+    inputs_tensor = torch.tensor(inputs, dtype=torch.float32)
+    labels_tensor = torch.tensor(labels, dtype=torch.float32).unsqueeze(1)
+
+    # 定义神经网络模型
+    model = SurfaceModel(input_dim=theta_dim + x_dim)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.MSELoss()
+
+    # 训练模型
+    for epoch in range(epochs):
+        model.train()
+        permutation = torch.randperm(inputs_tensor.size(0))
+        for i in range(0, inputs_tensor.size(0), batch_size):
+            indices = permutation[i:i+batch_size]
+            batch_inputs = inputs_tensor[indices]
+            batch_labels = labels_tensor[indices]
+
+            # 前向传播
+            predictions = model(batch_inputs)
+            loss = criterion(predictions, batch_labels)
+
+            # 反向传播
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        if (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch + 1}, Loss: {loss.item()}")
+
+    return model
+
+
+def conditional_sampling(x_new, gmm_models, M, surface_model):
+    # Step 1: Find the closest x_i in the dataset
+    
+    x_data = np.array([gmm.means_[:1] for gmm in gmm_models])  # Get the mean of each GMM as x_i
+    distances = cdist([x_new], covariates_points, 'euclidean')  # Calculate Euclidean distances
+    closest_idx = np.argmin(distances)  # Find the closest x_i
+    
+    # Step 2: Use the GMM corresponding to the closest x_i to generate samples of theta
+    gmm = gmm_models[closest_idx]
+    pi = gmm.weights_  # Mixture weights
+    mu = gmm.means_  # Mean of the Gaussians
+    cov = gmm.covariances_  # Covariance matrices
+    
+    # Generate M samples from the GMM (mixture of K Gaussians)
+    samples = np.zeros((M, mu.shape[1]))  # Initialize array to store samples
+    for i in range(M):
+        component = np.random.choice(len(pi), p=pi)  # Select Gaussian component based on mixture weights
+        samples[i] = np.random.multivariate_normal(mu[component], cov[component])
+    
+    # Step 3: Evaluate each sample using the objective function
+    scores = []
+    for theta in samples:
+        nn_input = torch.tensor(np.concatenate([theta, x_new]), dtype=torch.float32).unsqueeze(0)
+        score = surface_model(nn_input).item()
+        scores.append(score)
+   
+    # Step 4: Select the optimal solution (the one with the lowest objective function value)
+    best_idx = np.argmin(scores)
+    optimal_theta = samples[best_idx]
+    print("generate,ture",min(scores),objective_function(optimal_theta,x_new))
+    # Return the optimal solution
+    return optimal_theta,samples
+
 
 if __name__ == '__main__':
     np.random.seed(42)
@@ -186,14 +274,25 @@ if __name__ == '__main__':
     upbound = 4
     eta = 0.1  
     covariate_dim = 2
-    n = 20
-    K1 = 300
+    n = 16
+    K1 = 10
     T = 100
     noise_std = 1
+    M = 1000
     covariates_points = grid_sample(covariate_dim, lowbound, upbound, n)
     thetas = first_stage(covariates_points, K1, T, eta, covariate_dim)
     print(covariates_points.shape, thetas.shape)
     selected_theta = thetas[0]
+
+    objectives = np.zeros((n,K1))
+
+    for i,x in enumerate(covariates_points):
+        objectives[i,:] = [objective_function(theta, x) for theta in thetas[i]]
+    
+    nn_model = train_nn_surface_model(covariates_points, thetas, objectives, covariate_dim)
+
+
+
     plot_theta_distribution(selected_theta)
 
 
@@ -235,123 +334,33 @@ if __name__ == '__main__':
 
 
 
-    from sklearn.mixture import GaussianMixture
-    max_clusters = 20  # 尝试最多10个簇
-    bic_scores = []
-    data = thetas.reshape(-1, covariate_dim)  # (n * K, d)
-    data = thetas[0]
-    for n_clusters in range(1, max_clusters+1):
-        gmm = GaussianMixture(n_components=n_clusters)
-        gmm.fit(data)
-        bic_scores.append(gmm.bic(data))  # 计算 BIC
-    best_n_clusters = np.argmin(bic_scores) + 1
-    print("最佳簇数:", best_n_clusters)
 
-    # 可视化 BIC 曲线
-    plt.plot(range(1, max_clusters+1), bic_scores)
-    plt.xlabel('簇数')
-    plt.ylabel('BIC')
-    plt.title('BIC Score vs Number of Clusters')
-    plt.show()
+    K = 10
+    gmm_models = []
 
-
-
-
-    K = 9
-    # 训练 GMM：将每个 x_i 对应的 K 个解作为数据样本来训练 GMM
-    gmm = GaussianMixture(n_components=K, covariance_type='full', random_state=42)
-
-    # 训练时，theta_values 的形状是 (n, K, d)，需要先将其展平成一个二维数组
-    theta_flattened = thetas.reshape(-1, covariate_dim)  # (n * K, d)
-
-    # 训练 GMM
-    gmm.fit(theta_flattened)
-
-    # 获取 GMM 的参数
-    print("Means:", gmm.means_.shape)
-    print("Covariances:", gmm.covariances_.shape)
-    print("Weights:", gmm.weights_.shape)
-
-    labels = gmm.predict(theta_flattened)
-
-    # 获取每个 x_i 对应的条件分布（即从 GMM 中的每个高斯成分计算）
-    # for i in range(n):
-    #     print(f"Sample {i}:")
-    #     for k in range(K):
-            #print(f"  Component {k} Mean: {gmm.means_[k]}")
-            #print(f"  Component {k} Covariance: {gmm.covariances_[k]}")
-    #         print(f"  Component {k} Weight: {gmm.weights_[k]}")
-
-
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
-    # 可视化数据点和高斯成分
-    plt.figure(figsize=(8, 6))
-
-    # 绘制每个样本的 theta 解，并根据预测标签着色
-    sns.scatterplot(x=theta_flattened[:, 0], y=theta_flattened[:, 1], hue=labels, palette="viridis")
-
-    # 绘制 GMM 的每个高斯成分的均值和协方差
-    for k in range(1):
-        mean = gmm.means_[k]
-        covar = gmm.covariances_[k]
-        # 这里可以绘制椭圆来表示协方差
-        sns.kdeplot(x=theta_flattened[:, 0], y=theta_flattened[:, 1], fill=True, alpha=0.3)
-
-    plt.title("Gaussian Mixture Model: Conditional Distribution p(θ | x)")
-    plt.show()
-
-
-    import numpy as np
-
-    def generate_theta_from_gmm(x_new, gmm, num_samples=10):
-        """
-        Generate samples of theta from the learned GMM conditional distribution p(theta | x_new).
+    # Train one GMM per x_i
+    for i in range(n):
+        # For each x_i, the corresponding theta samples are theta_samples[i]
+        X = thetas[i]  # Shape (K, 2) for each x_i
         
-        Parameters:
-        - x_new: new sample (1D or 2D vector)
-        - gmm: trained Gaussian Mixture Model (with means, covariances, and weights)
+        # Initialize GMM model
+        gmm = GaussianMixture(n_components=K, covariance_type='full', random_state=42)
         
-        Returns:
-        - generated_thetas: generated samples of theta (from the conditional distribution)
-        """
-        # 计算每个成分的责任度 (E-step)
-        responsibilities = gmm.predict_proba([x_new])  # shape: (K, )
-        print("hhhhh",responsibilities.shape)
-    
-    # 生成样本
-        K = gmm.n_components
-        generated_thetas = []
-        
-        for _ in range(num_samples):
-            # 用于存储每次生成的 theta
-            theta_sample = []
-            
-            for k in range(K):
-                # 从第k个高斯成分中生成theta
-                mean = gmm.means_[k]
-                cov = gmm.covariances_[k]
-                # 从第 k 个成分中生成一个样本
-                theta_k = np.random.multivariate_normal(mean, cov)  # 生成θ
-                theta_sample.append(theta_k)
-            
-            # 直接将生成的样本存储在 generated_thetas 中
-            generated_thetas.append(np.array(theta_sample))
-        
-        # 返回所有生成的theta样本
-        return np.array(generated_thetas)
+        # Fit the GMM on the theta samples for this x_i
+        gmm.fit(X)
+        print(gmm.weights_)
+        # Save the trained model for this x_i
+        gmm_models.append(gmm)
 
-    # 示例：假设你有一个训练好的 GMM 和新的输入 x_new
+
+
+
     x_new = np.array([1.5, 2.0]) # 新的输入
     
-    #x_new = covariates_points[0]
-    
-    
-    num_samples = 1000
-    generated_theta = generate_theta_from_gmm(x_new, gmm,num_samples)
+    num_samples = 5000
+    best_theta, generated_theta = conditional_sampling(x_new, gmm_models, M, nn_model)
 
-    x_new =x_new.reshape(1,covariate_dim)
+    
     print("Generated theta:", generated_theta.shape)
     generated_theta = generated_theta.reshape(-1,covariate_dim)
     print(x_new)
@@ -359,6 +368,100 @@ if __name__ == '__main__':
     print(thetas_true.shape)
     thetas_true = thetas_true.reshape(-1,covariate_dim)
     plot_theta_distribution1(thetas_true,generated_theta)
+
+    theta1_values = np.linspace(lowbound, upbound, 100)  # 生成 theta1 的取值范围
+    theta2_values = np.linspace(lowbound, upbound, 100)  # 生成 theta2 的取值范围
+    theta1_grid, theta2_grid = np.meshgrid(theta1_values, theta2_values)  # 生成网格
+
+    # 计算目标函数值
+    x0 = x_new
+    objective_values = np.zeros_like(theta1_grid)
+    for i in range(len(theta1_values)):
+        for j in range(len(theta2_values)):
+            theta = np.array([theta1_grid[i, j], theta2_grid[i, j]])
+            objective_values[i, j] = objective_function(theta, x0)
+
+    
+    plt.figure(figsize=(8, 6))
+    contour = plt.contour(theta1_grid, theta2_grid, objective_values, 20, cmap='viridis')
+    sns.scatterplot(x=thetas_true[:, 0], y=thetas_true[:, 1], color='blue', s=20, alpha=0.7,label='True')
+    sns.scatterplot(x=generated_theta[:, 0], y=generated_theta[:, 1], color='red', s=20, alpha=0.7,label='Generated')
+    plt.colorbar(contour)
+    plt.title("Objective Function Contour Plot")
+    plt.xlabel(r'$\theta_1$')
+    plt.ylabel(r'$\theta_2$')
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+    
+
+    
+
+    # import numpy as np
+
+    # def generate_theta_from_gmm(x_new, gmm, num_samples=10):
+    #     """
+    #     Generate samples of theta from the learned GMM conditional distribution p(theta | x_new).
+        
+    #     Parameters:
+    #     - x_new: new sample (1D or 2D vector)
+    #     - gmm: trained Gaussian Mixture Model (with means, covariances, and weights)
+        
+    #     Returns:
+    #     - generated_thetas: generated samples of theta (from the conditional distribution)
+    #     """
+    #     # 计算每个成分的责任度 (E-step)
+    #     responsibilities = gmm.predict_proba([x_new])  # shape: (K, )
+    #     print("hhhhh",responsibilities.shape)
+    
+    # # 生成样本
+    #     K = gmm.n_components
+    #     generated_thetas = []
+        
+    #     for _ in range(num_samples):
+    #         # 用于存储每次生成的 theta
+    #         theta_sample = []
+            
+    #         for k in range(K):
+    #             # 从第k个高斯成分中生成theta
+    #             mean = gmm.means_[k]
+    #             cov = gmm.covariances_[k]
+    #             # 从第 k 个成分中生成一个样本
+    #             theta_k = np.random.multivariate_normal(mean, cov)  # 生成θ
+    #             theta_sample.append(theta_k)
+            
+    #         # 直接将生成的样本存储在 generated_thetas 中
+    #         generated_thetas.append(np.array(theta_sample))
+        
+    #     # 返回所有生成的theta样本
+    #     return np.array(generated_thetas)
+
+    # 示例：假设你有一个训练好的 GMM 和新的输入 x_new
+    # x_new = np.array([1.5, 2.0]) # 新的输入
+    
+    # #x_new = covariates_points[0]
+    
+    
+    # num_samples = 1000
+    # generated_theta = generate_theta_from_gmm(x_new, gmm,num_samples)
+
+    # x_new =x_new.reshape(1,covariate_dim)
+    # print("Generated theta:", generated_theta.shape)
+    # generated_theta = generated_theta.reshape(-1,covariate_dim)
+    # print(x_new)
+    # thetas_true = first_stage(x_new, 1000, T, eta, covariate_dim)
+    # print(thetas_true.shape)
+    # thetas_true = thetas_true.reshape(-1,covariate_dim)
+    # plot_theta_distribution1(thetas_true,generated_theta)
     # if covariate_dim == 2:
     #     plt.figure(figsize=(8, 6))
     #     sns.scatterplot(x=generated_theta[:, 0], y=generated_theta[:, 1], color='blue', s=100, alpha=0.7)
